@@ -1,9 +1,19 @@
-// csv-reader-speed-01-entry — v6: cursor-driven parser, same answers as
+// csv-reader-speed-01-entry — v7: cursor-driven parser, same answers as
 // csv-reader 1.0.0. Verified 6/6 practice cases identical (deep JSON diff)
-// and 30,378 differential fuzz inputs vs vendor readCsv with 0 mismatches.
+// and 30,756 differential fuzz inputs vs vendor readCsv with 0 mismatches.
 // Measured on the practice set (~10.2 MB, 6 cases, full `node main.ts`
-// process CPU, 7 runs): house baseline 1.942 s mean vs ours 0.707 s mean,
-// ~2.75x speedup (median 2.78x).
+// process CPU, 7 runs): house baseline 1.942 s mean vs v6.1 0.707 s mean,
+// ~2.75x speedup (median 2.78x). v7 keeps this v6.1 parser byte-identical
+// in behaviour and moves the optimisation to main.ts (cold-tuned V8 flags
+// + a JIT warmup parse; see main.ts for the measurements). A fast-record
+// path (one indexOf per field, no cursor sync, for quote-free CR-free
+// records) was tried in v7 and REVERTED: it measured 4-5% SLOWER in
+// interleaved cold runs (median 0.689 s vs 0.657 s), because its per-record
+// dispatch (3 indexOf calls) costs more than the per-field branches it
+// saves. Likewise String.split per line measured slower than indexOf+slice
+// per field, and flattening strings before JSON.stringify measured no
+// different — the parser is at its floor for this architecture (see the
+// v7 report for the full measurement log).
 //
 // The scanning is done by V8's native indexOf (C++), but the number of
 // calls is cut to about one per field: two lazily-refreshed cursors track
