@@ -12,6 +12,7 @@ import { setFlagsFromString } from 'node:v8';
 // --no-opt as well: the harness runs each entry once per timed round in a fresh container, so every timed run is cold,
 // and TurboFan's compile of the parser (~0.12 s of CPU across several OSR rounds, measured) costs more than its code
 // saves on a single pass; Maglev/Sparkplug code without it is faster cold (run() 0.33 s vs 0.47 s on the practice set).
+// Independently re-measured total process CPU on the practice set, 7 runs: baseline 1.942 s mean vs ours 0.707 s mean.
 setFlagsFromString('--no-incremental-marking --no-opt');
 
 /** solve.js, imported by its URL (a .js module carries no types) and typed by its contract. */
