@@ -1,25 +1,26 @@
-// csv-reader-speed-01-entry — v2: scan-driven parser, same answers as
+// csv-reader-speed-01-entry — v5: cursor-driven parser, same answers as
 // csv-reader 1.0.0.
 //
-// The hot paths never loop a character at a time building strings:
-//  - an unquoted field is found with one scan to the next delimiter
-//    (',', LF, or CR) and cut out with a single slice;
-//  - a quoted field's closing quote is found with indexOf('"') (doubled
-//    quotes skipped), and when the quoted span holds no doubled quote and
-//    no line break it is cut out with a single slice too.
-// Rare broken cases fall back to a slow per-character reader with the
-// vendor's exact rules: a lone CR inside an unquoted field (stray_cr),
-// a quoted span holding a doubled quote or an embedded line break, a
-// quote that never closes (unterminated_quote), junk after a closing
-// quote that holds a lone CR (quote_junk).
+// The scanning is done by V8's native indexOf (C++), but the number of
+// calls is cut to about one per field: two lazily-refreshed cursors track
+// the next CR and the next LF at or after the parse position (refreshed
+// only when the position moves past them — CRs and LFs are sparse next
+// to commas), and each unquoted field needs only one fresh indexOf(',')
+// plus integer compares against the cursors. A field is cut out with a
+// single slice; a quoted field's closing quote is found with indexOf('"')
+// (doubled quotes skipped) and, when its span holds no doubled quote and
+// no line break, cut out with a single slice too. Rare broken cases fall
+// back to a slow per-character reader with the vendor's exact rules: a
+// lone CR inside an unquoted field (stray_cr), a quoted span holding a
+// doubled quote or an embedded line break, a quote that never closes
+// (unterminated_quote), junk after a closing quote that holds a lone CR
+// (quote_junk).
 
 const COMMA = 0;
 const LINE_BREAK = 1;
 const END = 2;
 
-export function run(input) {
-  const text = String(input.text);
-  const header = input.header === true;
+function parse(text, header) {
   const n = text.length;
   const t = text;
   const errors = [];
@@ -31,6 +32,11 @@ export function run(input) {
   let pos = 0;
   let line = 1;
   if (n > 0 && t.charCodeAt(0) === 0xFEFF) pos = 1;
+
+  // Lazily-refreshed cursors: the next CR / LF at or after the position
+  // they were synced to. -1: none left in the text. -2: unknown, refresh.
+  let nr = -2;
+  let nl = -2;
 
   let recordLine = 1;
   let recordRow = 0;
@@ -62,6 +68,11 @@ export function run(input) {
     let fquoted = false;
     do {
       // ---- parse one field; sets fval, fend, fquoted ----
+      // Sync the cursors to this field's start.
+      if (nr !== -1 && nr < pos) nr = -2;
+      if (nr === -2) nr = t.indexOf('\r', pos);
+      if (nl !== -1 && nl < pos) nl = -2;
+      if (nl === -2) nl = t.indexOf('\n', pos);
       let fval;
       fend = -1;
       fquoted = false;
@@ -84,11 +95,10 @@ export function run(input) {
           pre = '"';
           start = pos + 1;
         } else {
-          // The quoted value.
+          // The quoted value: a plain slice when the span holds no
+          // doubled quote and no line break (the cursors say so).
           let qv;
-          const cr = t.indexOf('\r', pos + 1);
-          const lf = t.indexOf('\n', pos + 1);
-          if (!doubled && (cr === -1 || cr >= q) && (lf === -1 || lf >= q)) {
+          if (!doubled && !(nr !== -1 && nr < q) && !(nl !== -1 && nl < q)) {
             qv = t.slice(pos + 1, q);
           } else {
             // Doubled quotes collapse to one; CRLF and lone CR inside
@@ -154,83 +164,101 @@ export function run(input) {
         }
       }
       if (fend === -1) {
-        // ---- unquoted scan from `start`; value is pre + segment ----
-        let i = start;
-        let kind = END;
-        let slow = false;
-        while (i < n) {
-          const c = t.charCodeAt(i);
-          if (c === 44) {
-            kind = COMMA;
-            break;
-          }
-          if (c === 10) {
+        // ---- unquoted field from `start`; value is pre + segment ----
+        // The cursors may be stale for `start` (junk / unterminated
+        // start past the field's opening quote): refresh them.
+        if (nr !== -1 && nr < start) nr = -2;
+        if (nr === -2) nr = t.indexOf('\r', start);
+        if (nl !== -1 && nl < start) nl = -2;
+        if (nl === -2) nl = t.indexOf('\n', start);
+        // The field ends at the nearer of the next comma and the next
+        // LF (or the end of the text).
+        const comma = t.indexOf(',', start);
+        let end;
+        let kind;
+        if (comma === -1) {
+          if (nl === -1) {
+            end = n;
+            kind = END;
+          } else {
+            end = nl;
             kind = LINE_BREAK;
-            break;
           }
-          if (c === 13) {
-            if (t.charCodeAt(i + 1) === 10) {
-              kind = LINE_BREAK;
-              break;
-            }
-            slow = true;
-            break;
-          }
-          i += 1;
+        } else if (nl === -1) {
+          end = comma;
+          kind = COMMA;
+        } else if (comma < nl) {
+          end = comma;
+          kind = COMMA;
+        } else {
+          end = nl;
+          kind = LINE_BREAK;
         }
-        if (slow) {
-          // A lone CR inside the field: the vendor's exact per-character
-          // reader (stray_cr, dropped). Rare.
-          let v = pre;
-          let a = 0;
-          let j = start;
-          let k = END;
-          while (j < n) {
-            const c = t[j];
-            if (c === ',') {
-              j += 1;
-              k = COMMA;
-              break;
+        if (nr !== -1 && nr < end) {
+          if (kind === LINE_BREAK && nr === end - 1) {
+            // CRLF: the CR is the line break's first half, not field text.
+            const seg = t.slice(start, end - 1);
+            fval = pre === '' ? seg : pre + seg;
+            fend = LINE_BREAK;
+            pos = end + 1;
+            line += 1;
+            if (junkMode && seg.length > 0) {
+              errors.push({ code: 'quote_junk', line: recordLine, row: recordIsHeader ? null : recordRow });
             }
-            if (c === '\n') {
-              j += 1;
-              line += 1;
-              k = LINE_BREAK;
-              break;
-            }
-            if (c === '\r') {
-              if (t[j + 1] === '\n') {
-                j += 2;
+          } else {
+            // A lone CR inside the field: the vendor's exact per-character
+            // reader (stray_cr, dropped). Rare.
+            let v = pre;
+            let a = 0;
+            let j = start;
+            let k = END;
+            while (j < n) {
+              const c = t[j];
+              if (c === ',') {
+                j += 1;
+                k = COMMA;
+                break;
+              }
+              if (c === '\n') {
+                j += 1;
                 line += 1;
                 k = LINE_BREAK;
                 break;
               }
-              errors.push({ code: 'stray_cr', line: recordLine, row: recordIsHeader ? null : recordRow });
+              if (c === '\r') {
+                if (t[j + 1] === '\n') {
+                  j += 2;
+                  line += 1;
+                  k = LINE_BREAK;
+                  break;
+                }
+                errors.push({ code: 'stray_cr', line: recordLine, row: recordIsHeader ? null : recordRow });
+                j += 1;
+                continue;
+              }
+              v += c;
+              a += 1;
               j += 1;
-              continue;
             }
-            v += c;
-            a += 1;
-            j += 1;
-          }
-          fval = v;
-          fend = k;
-          pos = j;
-          if (junkMode && a > 0) {
-            errors.push({ code: 'quote_junk', line: recordLine, row: recordIsHeader ? null : recordRow });
+            fval = v;
+            fend = k;
+            pos = j;
+            if (junkMode && a > 0) {
+              errors.push({ code: 'quote_junk', line: recordLine, row: recordIsHeader ? null : recordRow });
+            }
           }
         } else {
+          const seg = t.slice(start, end);
+          fval = pre === '' ? seg : pre + seg;
+          fend = kind;
           if (kind === COMMA) {
-            pos = i + 1;
+            pos = end + 1;
           } else if (kind === LINE_BREAK) {
-            pos = t.charCodeAt(i) === 13 ? i + 2 : i + 1;
+            pos = end + 1;
             line += 1;
           } else {
             pos = n;
           }
-          const seg = t.slice(start, i);
-          fval = pre === '' ? seg : pre + seg;
-          fend = kind;
           if (junkMode && seg.length > 0) {
             errors.push({ code: 'quote_junk', line: recordLine, row: recordIsHeader ? null : recordRow });
           }
@@ -263,4 +291,8 @@ export function run(input) {
   }
   rows.length = rowCount;
   return { columns: header ? (columns ?? []) : null, rows, errors };
+}
+
+export function run(input) {
+  return parse(String(input.text), input.header === true);
 }
