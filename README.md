@@ -11,9 +11,17 @@ unterminated quotes, quote junk, short/long rows) — but much faster.
 
 - `solve.js` — ES module, exports `run(input)`. Pure JavaScript, no
   dependencies, no WebAssembly, no native addons.
-- `main.ts` — the harness driver: reads `/input/cases.json`, answers each
-  case with `run`, writes `/output/answers.json`. Keeps V8's incremental
-  marking off, as the house baseline does.
+- `main.ts` — the harness driver. v8 parses each case's CSV text
+  straight out of the raw `cases.json` bytes (a latin1 string scan:
+  no `JSON.parse` of the file, no per-field JS strings, no
+  `JSON.stringify` of the answers) and streams the answers out as
+  bytes; `solve.js` stays as the correctness oracle and the fallback
+  for any case the byte path cannot take. Keeps V8's incremental
+  marking off, as the house baseline does. Local practice-set CPU:
+  v7 0.732 s mean / 0.717 s median vs v8 0.614 s / 0.603 s
+  (21 interleaved cold runs). Verified 6/6 practice cases with the
+  kit scorer and 24,000 differential fuzz inputs vs vendor `readCsv`
+  with 0 mismatches.
 
 ## Bounty
 
