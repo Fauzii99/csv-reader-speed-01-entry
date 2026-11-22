@@ -1,6 +1,7 @@
 // csv-reader-speed-01-entry — v7: cursor-driven parser, same answers as
 // csv-reader 1.0.0. Verified 6/6 practice cases identical (deep JSON diff)
-// and 30,756 differential fuzz inputs vs vendor readCsv with 0 mismatches.
+// and 30,756 differential fuzz inputs vs vendor readCsv with 0 mismatches
+// (parent re-ran independently: 31,134 inputs, 0 mismatches).
 // Measured on the practice set (~10.2 MB, 6 cases, full `node main.ts`
 // process CPU, 7 runs): house baseline 1.942 s mean vs v6.1 0.707 s mean,
 // ~2.75x speedup (median 2.78x). v7 keeps this v6.1 parser byte-identical

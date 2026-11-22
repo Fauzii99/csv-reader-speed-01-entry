@@ -13,6 +13,8 @@ import { setFlagsFromString } from 'node:v8';
 // and TurboFan's compile of the parser (~0.12 s of CPU across several OSR rounds, measured) costs more than its code
 // saves on a single pass; Maglev/Sparkplug code without it is faster cold (run() 0.33 s vs 0.47 s on the practice set).
 // Independently re-measured total process CPU on the practice set, 7 runs: baseline 1.942 s mean vs v6.1 0.707 s mean.
+// Parent re-measured v7 vs v6.1 in 15 interleaved cold runs: v6.1 0.706 s mean / 0.704 s median vs v7 0.678 s /
+// 0.683 s — about 4% faster (a 7-run batch first showed no gain, within noise; the 15-run batch confirms it).
 // v7 flag matrix (full `node main.ts` process CPU, 7 cold runs each, v6.1 solve.js): --no-opt alone 0.712 s mean /
 // 0.698 s median; TurboFan on 0.866 / 0.889 (worse); --jitless 0.842 / 0.830 (worse); --no-maglev 0.899 / 0.874
 // (worse); adding --no-compilation-cache 0.657 / 0.652; --single-threaded 0.675 / 0.683; --max-semi-space-size=16
